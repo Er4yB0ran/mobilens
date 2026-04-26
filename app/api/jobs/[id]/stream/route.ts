@@ -93,7 +93,7 @@ export async function POST(
       const input = job.type === 'url' ? job.input_url! : job.input_file_url!
       const task = buildTask(job.type, input)
 
-      const { sessionId, output, collectedUrls } = await runAgentSession(
+      const { sessionId, output } = await runAgentSession(
         task,
         async (message) => { await send({ type: 'log', message }) }
       )
