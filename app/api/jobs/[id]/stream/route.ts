@@ -4,6 +4,12 @@ import { NextResponse } from 'next/server'
 
 export const maxDuration = 300
 
+const FAL_DOMAINS = ['fal.media', 'fal.run', 'cdn.fal.ai']
+
+function isFalUrl(url: string): boolean {
+  return FAL_DOMAINS.some(d => url.includes(d))
+}
+
 function extractMediaUrls(sources: string[], extensions: string[]): string[] {
   const seen = new Set<string>()
   const results: string[] = []
@@ -11,13 +17,30 @@ function extractMediaUrls(sources: string[], extensions: string[]): string[] {
     const urls = text.match(/https?:\/\/[^\s"'<>)\]\\]+/g) ?? []
     for (const url of urls) {
       const clean = url.split('?')[0].toLowerCase().split('#')[0]
-      if (extensions.some(ext => clean.endsWith(`.${ext}`)) && !seen.has(url)) {
+      if (extensions.some(ext => clean.endsWith(`.${ext}`)) && isFalUrl(url) && !seen.has(url)) {
         seen.add(url)
         results.push(url)
       }
     }
   }
   return results
+}
+
+// Parse URLs from the structured block the agent writes at the end of its response
+function parseStructuredMedia(output: string): { images: string[]; videos: string[] } {
+  const images: string[] = []
+  const videos: string[] = []
+
+  const imgBlock = output.match(/ÜRETİLEN_GÖRSELLER:\s*([\s\S]*?)(?=ÜRETİLEN_VİDEOLAR:|$)/i)
+  const vidBlock = output.match(/ÜRETİLEN_VİDEOLAR:\s*([\s\S]*?)$/i)
+
+  const extractUrls = (block: string) =>
+    (block.match(/https?:\/\/[^\s"'<>)\]\\]+/g) ?? []).filter(isFalUrl)
+
+  if (imgBlock?.[1]) images.push(...extractUrls(imgBlock[1]))
+  if (vidBlock?.[1]) videos.push(...extractUrls(vidBlock[1]))
+
+  return { images, videos }
 }
 
 export async function POST(
@@ -75,9 +98,15 @@ export async function POST(
         async (message) => { await send({ type: 'log', message }) }
       )
 
-      const sources = [output, ...collectedUrls]
-      const imageUrls = extractMediaUrls(sources, ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif'])
-      const videoUrls = extractMediaUrls(sources, ['mp4', 'webm', 'mov'])
+      // Primary: parse the structured block the agent writes at the end of its response
+      const structured = parseStructuredMedia(output)
+      // Fallback: scan the full output text for fal.ai URLs (filter applied inside extractMediaUrls)
+      const imageUrls = structured.images.length
+        ? structured.images
+        : extractMediaUrls([output], ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif'])
+      const videoUrls = structured.videos.length
+        ? structured.videos
+        : extractMediaUrls([output], ['mp4', 'webm', 'mov'])
 
       const result: Record<string, any> = { raw_output: output }
       if (imageUrls.length > 0) result.images = imageUrls

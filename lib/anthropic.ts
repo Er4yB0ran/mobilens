@@ -29,18 +29,10 @@ export async function runAgentSession(
   })
 
   let output = ''
-  const collectedUrls: string[] = []
 
   for await (const event of stream) {
     const type = event?.type as string | undefined
     if (!type) continue
-
-    // Scan every event's JSON for media URLs (tool results carry FAL URLs)
-    try {
-      const raw = JSON.stringify(event)
-      const found = raw.match(/https?:\/\/[^\s"'\\]+/g) ?? []
-      collectedUrls.push(...found)
-    } catch {}
 
     if (type === 'agent.tool_use' || type === 'agent.mcp_tool_use') {
       await onLog(toolLabel(event.name ?? ''))
@@ -58,7 +50,7 @@ export async function runAgentSession(
     }
   }
 
-  return { sessionId, output, collectedUrls }
+  return { sessionId, output, collectedUrls: [] }
 }
 
 function toolLabel(name: string): string {
@@ -76,25 +68,27 @@ function toolLabel(name: string): string {
 
 const AUTO_PROCEED = `\n\nÖNEMLİ: Bu istek otomatik SaaS sisteminden geliyor. Kullanıcıdan onay BEKLEME — ürünü bulduktan hemen sonra fotoğraf ve video üretimine geç.`
 
+const URL_LISTING = `\n\nSON ADIM — ZORUNLU: Tüm işlemler bitince yanıtının EN SONUNA şu formatı AYNEN ekle (başka URL ekleme, sadece fal.ai tarafından üretilenleri yaz):\n\nÜRETİLEN_GÖRSELLER:\n<her üretilen görsel URL'si ayrı satırda>\n\nÜRETİLEN_VİDEOLAR:\n<video URL'si>`
+
 export function buildTask(type: 'url' | 'upload', input: string): string {
   if (type === 'url') {
     return (
       `Ürün URL: ${input}\n\n` +
       `Sadece bu ürün için aşağıdakileri üret:\n` +
       `1. 1 adet lifestyle fotoğrafı (ürünü gerçek ortamda gösteren)\n` +
-      `2. 1 adet video thumbnail görseli\n` +
-      `3. 1 adet kısa tanıtım videosu\n\n` +
+      `2. 1 adet kısa tanıtım videosu\n\n` +
       `Başka ürün ekleme, karşılaştırma yapma. Yalnızca bu ürünü işle.` +
-      AUTO_PROCEED
+      AUTO_PROCEED +
+      URL_LISTING
     )
   }
   return (
     `Ürün görseli: ${input}\n\n` +
     `Sadece bu ürün için aşağıdakileri üret:\n` +
     `1. 1 adet lifestyle fotoğrafı (ürünü gerçek ortamda gösteren)\n` +
-    `2. 1 adet video thumbnail görseli\n` +
-    `3. 1 adet kısa tanıtım videosu\n\n` +
+    `2. 1 adet kısa tanıtım videosu\n\n` +
     `Başka ürün ekleme, karşılaştırma yapma. Yalnızca bu ürünü işle.` +
-    AUTO_PROCEED
+    AUTO_PROCEED +
+    URL_LISTING
   )
 }
