@@ -2,7 +2,7 @@ import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { buildTask, runAgentSession } from '@/lib/anthropic'
 import { NextResponse } from 'next/server'
 
-export const maxDuration = 800
+export const maxDuration = 300
 
 const FAL_DOMAINS = ['fal.media', 'fal.run', 'cdn.fal.ai']
 
