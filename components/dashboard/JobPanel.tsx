@@ -43,7 +43,11 @@ export default function JobPanel({ initialJobs, activeJobId }: JobPanelProps) {
           setJobs(prev => [payload.new as Job, ...prev])
           setSelectedId((payload.new as Job).id)
         } else if (payload.eventType === 'UPDATE') {
-          setJobs(prev => prev.map(j => j.id === (payload.new as Job).id ? payload.new as Job : j))
+          setJobs(prev => prev.map(j => {
+            if (j.id !== (payload.new as Job).id) return j
+            const n = payload.new as Job
+            return { ...j, ...n, result: n.result ?? j.result }
+          }))
         } else if (payload.eventType === 'DELETE') {
           setJobs(prev => prev.filter(j => j.id !== (payload.old as Job).id))
         }

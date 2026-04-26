@@ -6,7 +6,7 @@ import { Progress } from '@/components/ui/progress'
 import {
   Play, Download, Copy, XCircle,
   Loader2, Clock, FileText, Video,
-  CheckCircle2, ChevronDown, ChevronUp,
+  CheckCircle2, ChevronDown, ChevronUp, RefreshCw,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -25,17 +25,22 @@ interface LogEntry {
 
 const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif']
 const VIDEO_EXTS = ['mp4', 'webm', 'mov']
-const STEP_PROGRESS_PER_STEP = 8
+const FAL_DOMAINS = ['fal.media', 'fal.run', 'cdn.fal.ai', 'falserverless', 'fal-cdn']
+const STEP_PROGRESS_PER_STEP = 5
+
+function isFalUrl(url: string) { return FAL_DOMAINS.some(d => url.includes(d)) }
 
 function clientExtractUrls(text: string, exts: string[]): string[] {
   const urls = text.match(/https?:\/\/[^\s"'<>)\]\\]+/g) ?? []
   return [...new Set(urls.filter(u => {
     const clean = u.split('?')[0].toLowerCase().split('#')[0]
-    return exts.some(e => clean.endsWith(`.${e}`))
+    return exts.some(e => clean.endsWith(`.${e}`)) || isFalUrl(u)
   }))]
 }
 
-const isToolStep = (msg: string) => /\.\.\.$|…$/.test(msg.trim())
+// Show all meaningful log messages — exclude internal session ID lines
+const isStepMessage = (msg: string) =>
+  msg.trim().length > 0 && !msg.startsWith('Session:')
 
 export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
   const [logs, setLogs] = useState<LogEntry[]>([])
@@ -43,6 +48,7 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
   const [started, setStarted] = useState(false)
   const [currentJob, setCurrentJob] = useState<Job>(job)
   const [showRawOutput, setShowRawOutput] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const logsEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -50,25 +56,84 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
     setLogs([])
     setStarted(false)
     setStreaming(false)
-    setShowRawOutput(false)
+    setShowRawOutput(job.status === 'completed' && !job.result?.images?.length && !job.result?.videos?.length)
   }, [job.id])
 
+  async function refreshJobState() {
+    setRefreshing(true)
+    try {
+      const res = await fetch(`/api/jobs/${currentJob.id}`)
+      if (!res.ok) return
+      const latest = await res.json()
+      setCurrentJob(prev => ({
+        ...prev,
+        status: latest.status,
+        result: latest.result ?? prev.result,
+        error_message: latest.error_message ?? prev.error_message,
+      }))
+      onJobUpdated(latest)
+    } catch {
+      toast.error('Durum alınamadı')
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   // Supabase realtime veya bağlantı kopması sonrası status/result senkronizasyonu
+  // result: null gelebilir (running→completed arası geç gelen event) — mevcut result korunur
   useEffect(() => {
-    setCurrentJob(prev => ({ ...prev, status: job.status, result: job.result }))
+    setCurrentJob(prev => ({
+      ...prev,
+      status: job.status,
+      result: job.result ?? prev.result,
+    }))
   }, [job.status, job.result])
+
+  // Tamamlandı ama result yoksa (realtime eventi result'ı silmiş olabilir) — sessizce fetch
+  useEffect(() => {
+    if (currentJob.status !== 'completed' || currentJob.result) return
+    const jobId = currentJob.id
+    fetch(`/api/jobs/${jobId}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(latest => {
+        if (latest?.result) {
+          setCurrentJob(prev => ({ ...prev, result: latest.result }))
+          onJobUpdated({ ...latest })
+        }
+      })
+      .catch(() => {})
+  }, [currentJob.status, currentJob.result, currentJob.id])
 
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [logs])
 
-  // Stream koparsa ya da önceki oturumdan 'running' geldiyse: 3s'de bir DB'yi sorgula
-  // 40 denemeden sonra (2 dak) hâlâ running ise 'failed' olarak işaretle
+  // Safety net: stream açık ama session DB'de zaten tamamlandıysa (for-await cleanup takılması)
+  // 30s'de bir DB'yi kontrol et; tamamlandıysa streaming'i durdur ve sonucu göster
+  useEffect(() => {
+    if (currentJob.status !== 'running' || !streaming) return
+    const jobId = currentJob.id
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/jobs/${jobId}`)
+        if (!res.ok) return
+        const updated = await res.json()
+        if (updated.status !== 'running') {
+          setCurrentJob(prev => ({ ...prev, status: updated.status, result: updated.result ?? prev.result }))
+          setStreaming(false)
+        }
+      } catch {}
+    }, 30_000)
+    return () => clearInterval(timer)
+  }, [currentJob.status, currentJob.id, streaming])
+
+  // Stream koparsa ya da önceki oturumdan 'running' geldiyse: 5s'de bir DB'yi sorgula
+  // Kling video üretimi 5-15 dk sürebildiğinden MAX = 300 (25 dakika)
   useEffect(() => {
     if (currentJob.status !== 'running' || streaming) return
     const jobId = currentJob.id
     let attempts = 0
-    const MAX = 40
+    const MAX = 300
     const timer = setInterval(async () => {
       attempts++
       try {
@@ -89,7 +154,7 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
           error_message: 'İşlem zaman aşımına uğradı. Lütfen tekrar deneyin.',
         }))
       }
-    }, 3000)
+    }, 5000)
     return () => clearInterval(timer)
   }, [currentJob.status, currentJob.id, streaming])
 
@@ -118,9 +183,13 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
       buffer = lines.pop() ?? ''
 
       for (const line of lines) {
+        // SSE keepalive comments start with ':' — ignore them
+        if (line.startsWith(':')) continue
         if (!line.startsWith('data: ')) continue
         try {
           const entry: LogEntry = JSON.parse(line.slice(6))
+          // Ignore internal keepalive/ping events
+          if (entry.type === 'ping' || entry.type === 'keepalive') continue
           setLogs(prev => [...prev, entry])
           if (entry.type === 'status') {
             setCurrentJob(prev => ({ ...prev, status: entry.status as any }))
@@ -133,10 +202,26 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
         } catch {}
       }
     }
+
+    // After the stream closes (normally or due to disconnect), fetch the latest job state
+    // from the API. This ensures the UI reflects the DB truth even if SSE events were lost.
+    try {
+      const finalRes = await fetch(`/api/jobs/${currentJob.id}`)
+      if (finalRes.ok) {
+        const latestJob = await finalRes.json()
+        setCurrentJob(prev => ({
+          ...prev,
+          status: latestJob.status,
+          result: latestJob.result ?? prev.result,
+          error_message: latestJob.error_message ?? prev.error_message,
+        }))
+      }
+    } catch {}
+
     setStreaming(false)
   }
 
-  const toolSteps = logs.filter(l => l.type === 'log' && isToolStep(l.message ?? ''))
+  const toolSteps = logs.filter(l => l.type === 'log' && isStepMessage(l.message ?? ''))
   const hasActivity = started || currentJob.status !== 'pending'
   const isCompleted = currentJob.status === 'completed'
   const isFailed = currentJob.status === 'failed'
@@ -150,12 +235,13 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
 
   const result = currentJob.result
 
-  const displayImages: string[] = result?.images?.length
-    ? result.images
-    : clientExtractUrls(result?.raw_output ?? '', IMAGE_EXTS)
   const displayVideos: string[] = result?.videos?.length
     ? result.videos
     : clientExtractUrls(result?.raw_output ?? '', VIDEO_EXTS)
+  const videoUrlSet = new Set(displayVideos)
+  const displayImages: string[] = result?.images?.length
+    ? result.images
+    : clientExtractUrls(result?.raw_output ?? '', IMAGE_EXTS).filter(u => !videoUrlSet.has(u))
 
   const hasMedia = displayImages.length > 0 || displayVideos.length > 0
 
@@ -420,11 +506,24 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
                 )}
 
                 {isFailed && (
-                  <div className="step-in border border-red-400/20 bg-red-400/5 px-3 py-3 flex items-start gap-2.5">
-                    <XCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-400" />
-                    <span className="text-[13px] font-mono text-red-400">
-                      {currentJob.error_message || 'Bilinmeyen bir hata oluştu'}
-                    </span>
+                  <div className="step-in border border-red-400/20 bg-red-400/5 px-3 py-3 flex flex-col gap-2.5">
+                    <div className="flex items-start gap-2.5">
+                      <XCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-400" />
+                      <span className="text-[13px] font-mono text-red-400">
+                        {currentJob.error_message || 'Bilinmeyen bir hata oluştu'}
+                      </span>
+                    </div>
+                    <button
+                      onClick={refreshJobState}
+                      disabled={refreshing}
+                      className="flex items-center gap-1.5 self-start px-3 py-1.5 border border-white/15 bg-white/5 hover:bg-white/10 transition-colors text-[11px] font-mono text-muted-foreground cursor-pointer disabled:opacity-50"
+                    >
+                      {refreshing
+                        ? <Loader2 className="w-3 h-3 animate-spin" />
+                        : <RefreshCw className="w-3 h-3" />
+                      }
+                      Durumu Yenile
+                    </button>
                   </div>
                 )}
               </div>

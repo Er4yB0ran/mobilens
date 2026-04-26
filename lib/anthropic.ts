@@ -7,6 +7,8 @@ export const anthropic = new Anthropic({
 export const AGENT_ID = process.env.ANTHROPIC_AGENT_ID!
 const ENVIRONMENT_ID = process.env.ANTHROPIC_ENVIRONMENT_ID
 
+const SESSION_TIMEOUT_MS = 15 * 60 * 1000 // 15 minutes
+
 export async function runAgentSession(
   task: string,
   onLog: (message: string) => Promise<void>
@@ -29,41 +31,80 @@ export async function runAgentSession(
   })
 
   let output = ''
+  let hasOutput = false
+  let idleResolve: (() => void) | null = null
+  // Fires 20s after session.idle if we still have no output — avoids hanging forever
+  const idleWatchdog = new Promise<'idle-timeout'>((resolve) => {
+    idleResolve = () => setTimeout(() => resolve('idle-timeout'), 20_000)
+  })
 
-  for await (const event of stream) {
-    const type = event?.type as string | undefined
-    if (!type) continue
+  // Fast-path: resolves immediately when session.idle fires WITH output already collected.
+  // Guards against for-await cleanup hanging after break (iterator.return() can block on some
+  // SDK versions), which would cause runAgentSession to never return and the SSE stream to stay open.
+  let idleWithOutputResolve: (() => void) | null = null
+  const idleWithOutputDone = new Promise<'done'>((resolve) => {
+    idleWithOutputResolve = () => resolve('done')
+  })
 
-    if (type === 'agent.tool_use' || type === 'agent.mcp_tool_use') {
-      await onLog(toolLabel(event.name ?? ''))
-    } else if (type === 'agent.message') {
-      output = (event.content as Array<{ text: string }>)
-        ?.map((c) => c.text)
-        .join('') ?? ''
-    } else if (
-      type === 'session.status_idle' ||
-      type === 'session.status_terminated' ||
-      type === 'session.deleted' ||
-      type === 'session.error'
-    ) {
-      break
+  const timeoutPromise = new Promise<'timeout'>((resolve) =>
+    setTimeout(() => resolve('timeout'), SESSION_TIMEOUT_MS)
+  )
+
+  const streamPromise = (async () => {
+    for await (const event of stream) {
+      const type = event?.type as string | undefined
+      if (!type) continue
+
+      if (type === 'agent.tool_use' || type === 'agent.mcp_tool_use') {
+        // Tool calls intentionally not logged — only agent text is shown in the right panel
+      } else if (type === 'agent.message') {
+        // Content may be Array<{type,text}> or plain string depending on SDK version
+        const content = (event as any).content
+        let text = ''
+        if (Array.isArray(content)) {
+          text = content.map((c: any) => c.text ?? '').join('')
+        } else if (typeof content === 'string') {
+          text = content
+        }
+        if (text) {
+          // Send the first meaningful line so the right panel shows agent narration
+          const firstLine = text.split(/\r?\n/).find(l => l.trim())?.trim()
+          if (firstLine) await onLog(firstLine.slice(0, 150))
+          output = text
+          hasOutput = true
+        }
+      } else if (type.startsWith('session.')) {
+        if (type === 'session.error') {
+          throw new Error(`Session hatası: ${(event as any).message ?? type}`)
+        }
+        // Terminal states — exit immediately
+        if (type === 'session.terminated' || type === 'session.deleted' || type === 'session.interrupted') {
+          break
+        }
+        // session.idle = agent finished its turn. If we have output, done. Otherwise arm watchdog.
+        if (type === 'session.idle') {
+          if (hasOutput) { idleWithOutputResolve?.(); break }
+          idleResolve?.()  // start 20s countdown
+        }
+      }
     }
+    return 'done' as const
+  })()
+
+  const raceResult = await Promise.race([streamPromise, timeoutPromise, idleWatchdog, idleWithOutputDone])
+
+  if (raceResult === 'timeout') {
+    throw new Error('Agent zaman aşımına uğradı (15 dakika). Lütfen tekrar deneyin.')
+  }
+
+  if (!output.trim()) {
+    const reason = raceResult === 'idle-timeout'
+      ? 'Agent session tamamlandı ancak metin yanıtı alınamadı (session.idle sonrası 20s beklendi).'
+      : 'Agent yanıt üretmedi — session beklenmedik şekilde kapandı.'
+    throw new Error(`${reason} Lütfen tekrar deneyin.`)
   }
 
   return { sessionId, output, collectedUrls: [] }
-}
-
-function toolLabel(name: string): string {
-  const map: Record<string, string> = {
-    urun_bilgisi_cek: 'Ürün bilgisi çekiliyor...',
-    urun_analiz_et: 'Ürün analiz ediliyor...',
-    reklam_metni_olustur: 'Reklam metinleri yazılıyor...',
-    gorsel_uret: 'Görseller üretiliyor...',
-    video_uret: 'Video üretiliyor...',
-    tam_kampanya_olustur: 'Tam kampanya oluşturuluyor...',
-    manuel_kampanya_olustur: 'Manuel kampanya oluşturuluyor...',
-  }
-  return map[name] ?? `${name} çalışıyor...`
 }
 
 const AUTO_PROCEED = `\n\nÖNEMLİ: Bu istek otomatik SaaS sisteminden geliyor. Kullanıcıdan onay BEKLEME — ürünü bulduktan hemen sonra fotoğraf ve video üretimine geç.`

@@ -4,20 +4,25 @@ import { NextResponse } from 'next/server'
 
 export const maxDuration = 300
 
-const FAL_DOMAINS = ['fal.media', 'fal.run', 'cdn.fal.ai']
+// Expanded fal.ai domain list — Kling results can come from various subdomains/buckets
+const FAL_DOMAINS = ['fal.media', 'fal.run', 'cdn.fal.ai', 'falserverless', 'fal-cdn']
 
 function isFalUrl(url: string): boolean {
   return FAL_DOMAINS.some(d => url.includes(d))
 }
 
-function extractMediaUrls(sources: string[], extensions: string[]): string[] {
+function extractMediaUrls(sources: string[], extensions: string[], requireFalDomain = false): string[] {
   const seen = new Set<string>()
   const results: string[] = []
   for (const text of sources) {
     const urls = text.match(/https?:\/\/[^\s"'<>)\]\\]+/g) ?? []
     for (const url of urls) {
       const clean = url.split('?')[0].toLowerCase().split('#')[0]
-      if (extensions.some(ext => clean.endsWith(`.${ext}`)) && isFalUrl(url) && !seen.has(url)) {
+      const extMatch = extensions.some(ext => clean.endsWith(`.${ext}`))
+      // fal.ai CDN URLs may lack file extensions — accept them regardless
+      const falDomain = isFalUrl(url)
+      const domainMatch = !requireFalDomain || falDomain
+      if ((extMatch || falDomain) && domainMatch && !seen.has(url)) {
         seen.add(url)
         results.push(url)
       }
@@ -34,8 +39,9 @@ function parseStructuredMedia(output: string): { images: string[]; videos: strin
   const imgBlock = output.match(/ÜRETİLEN_GÖRSELLER:\s*([\s\S]*?)(?=ÜRETİLEN_VİDEOLAR:|$)/i)
   const vidBlock = output.match(/ÜRETİLEN_VİDEOLAR:\s*([\s\S]*?)$/i)
 
+  // Trust the structured block — agent explicitly placed these URLs, no domain filter needed
   const extractUrls = (block: string) =>
-    (block.match(/https?:\/\/[^\s"'<>)\]\\]+/g) ?? []).filter(isFalUrl)
+    (block.match(/https?:\/\/[^\s"'<>)\]\\]+/g) ?? [])
 
   if (imgBlock?.[1]) images.push(...extractUrls(imgBlock[1]))
   if (vidBlock?.[1]) videos.push(...extractUrls(vidBlock[1]))
@@ -82,8 +88,17 @@ export async function POST(
   const writer = stream.writable.getWriter()
 
   const send = async (data: object) => {
-    await writer.write(encoder.encode(`data: ${JSON.stringify(data)}\n\n`))
+    try {
+      await writer.write(encoder.encode(`data: ${JSON.stringify(data)}\n\n`))
+    } catch {}
   }
+
+  // Send SSE comment pings every 25s to keep the connection alive during long video generation
+  const keepAliveInterval = setInterval(async () => {
+    try {
+      await writer.write(encoder.encode(': ping\n\n'))
+    } catch {}
+  }, 25000)
 
   ;(async () => {
     try {
@@ -100,13 +115,13 @@ export async function POST(
 
       // Primary: parse the structured block the agent writes at the end of its response
       const structured = parseStructuredMedia(output)
-      // Fallback: scan the full output text for fal.ai URLs (filter applied inside extractMediaUrls)
+      // Fallback: scan full output for any image/video URL (no fal domain requirement for fallback)
       const imageUrls = structured.images.length
         ? structured.images
-        : extractMediaUrls([output], ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif'])
+        : extractMediaUrls([output], ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif'], false)
       const videoUrls = structured.videos.length
         ? structured.videos
-        : extractMediaUrls([output], ['mp4', 'webm', 'mov'])
+        : extractMediaUrls([output], ['mp4', 'webm', 'mov'], false)
 
       const result: Record<string, any> = { raw_output: output }
       if (imageUrls.length > 0) result.images = imageUrls
@@ -127,7 +142,9 @@ export async function POST(
       }
 
       await send({ type: 'status', status: 'completed', message: 'Tamamlandı!' })
-      await send({ type: 'result', result })
+      // Send lightweight result (without raw_output) so the SSE event stays small and parseable.
+      // The full result (including raw_output) is in the DB and will be fetched via polling/realtime.
+      await send({ type: 'result', result: { images: imageUrls, videos: videoUrls } })
     } catch (err: any) {
       const msg = err?.message ?? 'Bilinmeyen hata'
       await service
@@ -148,8 +165,9 @@ export async function POST(
       }
       await send({ type: 'status', status: 'failed', message: msg })
     } finally {
+      clearInterval(keepAliveInterval)
       await send({ type: 'done' })
-      await writer.close()
+      try { await writer.close() } catch {}
     }
   })()
 
