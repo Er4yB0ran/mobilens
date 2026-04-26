@@ -1,3 +1,4 @@
+// mobilens
 import type { Metadata } from 'next'
 import { Syne, JetBrains_Mono } from 'next/font/google'
 import './globals.css'
