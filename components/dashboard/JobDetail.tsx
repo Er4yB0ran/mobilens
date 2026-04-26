@@ -25,7 +25,7 @@ interface LogEntry {
 
 const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif']
 const VIDEO_EXTS = ['mp4', 'webm', 'mov']
-const EXPECTED_STEPS = 6
+const STEP_PROGRESS_PER_STEP = 8
 
 function clientExtractUrls(text: string, exts: string[]): string[] {
   const urls = text.match(/https?:\/\/[^\s"'<>)\]\\]+/g) ?? []
@@ -53,9 +53,45 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
     setShowRawOutput(false)
   }, [job.id])
 
+  // Supabase realtime veya bağlantı kopması sonrası status/result senkronizasyonu
+  useEffect(() => {
+    setCurrentJob(prev => ({ ...prev, status: job.status, result: job.result }))
+  }, [job.status, job.result])
+
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [logs])
+
+  // Stream koparsa ya da önceki oturumdan 'running' geldiyse: 3s'de bir DB'yi sorgula
+  // 40 denemeden sonra (2 dak) hâlâ running ise 'failed' olarak işaretle
+  useEffect(() => {
+    if (currentJob.status !== 'running' || streaming) return
+    const jobId = currentJob.id
+    let attempts = 0
+    const MAX = 40
+    const timer = setInterval(async () => {
+      attempts++
+      try {
+        const res = await fetch(`/api/jobs/${jobId}`)
+        if (!res.ok) return
+        const updated = await res.json()
+        if (updated.status !== 'running') {
+          clearInterval(timer)
+          setCurrentJob(prev => ({ ...prev, status: updated.status, result: updated.result }))
+          return
+        }
+      } catch {}
+      if (attempts >= MAX) {
+        clearInterval(timer)
+        setCurrentJob(prev => ({
+          ...prev,
+          status: 'failed',
+          error_message: 'İşlem zaman aşımına uğradı. Lütfen tekrar deneyin.',
+        }))
+      }
+    }, 3000)
+    return () => clearInterval(timer)
+  }, [currentJob.status, currentJob.id, streaming])
 
   async function startJob() {
     if (started || streaming) return
@@ -109,7 +145,7 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
   const progressValue =
     isCompleted ? 100
     : isFailed ? 100
-    : isRunning ? Math.min(85, 5 + toolSteps.length * Math.floor(85 / EXPECTED_STEPS))
+    : isRunning ? Math.min(92, 10 + toolSteps.length * STEP_PROGRESS_PER_STEP)
     : 0
 
   const result = currentJob.result
@@ -160,6 +196,13 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
               </div>
             )}
 
+            {isRunning && !streaming && (
+              <div className="flex items-center gap-2 px-3 py-1.5 border border-white/15 bg-black/20">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
+                <span className="text-[11px] font-mono font-bold text-muted-foreground">İşleniyor</span>
+              </div>
+            )}
+
             {isCompleted && !streaming && (
               <div className="flex items-center gap-1.5 px-3 py-1.5 border border-border">
                 <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />
@@ -181,8 +224,12 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
               )}
             />
             {isRunning && (
-              <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
-                <span>Adım {toolSteps.length} / ~{EXPECTED_STEPS}</span>
+              <div className="flex justify-between text-xs font-mono text-muted-foreground">
+                <span>
+                  {toolSteps.length > 0
+                    ? `Adım ${toolSteps.length}`
+                    : streaming ? 'Başlatılıyor' : 'İşleniyor'}
+                </span>
                 <span>{progressValue}%</span>
               </div>
             )}
@@ -318,10 +365,20 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
 
             {hasActivity && (
               <div className="space-y-1.5">
-                {started && toolSteps.length === 0 && streaming && (
-                  <div className="step-in flex items-center gap-3 px-3 py-2.5 border border-white/8 bg-black/20" style={{ boxShadow: 'inset 2px 2px 6px rgba(0,0,0,0.35), inset -1px -1px 4px rgba(255,255,255,0.02)' }}>
-                    <Loader2 className="w-3.5 h-3.5 text-primary animate-spin flex-shrink-0" />
-                    <p className="text-xs font-mono text-muted-foreground">Hazırlanıyor...</p>
+                {isRunning && toolSteps.length === 0 && (
+                  <div
+                    className={cn(
+                      'step-in flex items-center gap-3 px-3 py-3 border',
+                      streaming
+                        ? 'border-primary/40 bg-primary/5 glow-primary-sm'
+                        : 'border-white/8 bg-black/20'
+                    )}
+                    style={{ boxShadow: 'inset 2px 2px 6px rgba(0,0,0,0.35), inset -1px -1px 4px rgba(255,255,255,0.02)' }}
+                  >
+                    <Loader2 className={cn('w-4 h-4 animate-spin flex-shrink-0', streaming ? 'text-primary' : 'text-muted-foreground')} />
+                    <p className="text-[13px] font-mono text-muted-foreground">
+                      {streaming ? 'Hazırlanıyor...' : 'Sonuç bekleniyor...'}
+                    </p>
                   </div>
                 )}
 
@@ -332,16 +389,16 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
                       key={i}
                       style={!isActive ? { boxShadow: 'inset 2px 2px 6px rgba(0,0,0,0.30), inset -1px -1px 3px rgba(255,255,255,0.015)' } : undefined}
                       className={cn(
-                        'step-in flex items-center gap-3 px-3 py-2.5 border transition-all duration-200',
+                        'step-in flex items-center gap-3 px-3 py-3 border transition-all duration-200',
                         isActive ? 'border-primary/40 bg-primary/5 glow-primary-sm' : 'border-white/7 bg-black/15'
                       )}
                     >
                       {isActive
-                        ? <Loader2 className="w-3.5 h-3.5 text-primary animate-spin flex-shrink-0" />
-                        : <CheckCircle2 className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
+                        ? <Loader2 className="w-4 h-4 text-primary animate-spin flex-shrink-0" />
+                        : <CheckCircle2 className="w-4 h-4 text-green-400 flex-shrink-0" />
                       }
                       <p className={cn(
-                        'text-xs font-mono truncate',
+                        'text-[13px] font-mono truncate',
                         isActive ? 'text-foreground' : 'text-muted-foreground'
                       )}>
                         {step.message?.replace(/\.{3}$|…$/, '')}
@@ -351,11 +408,11 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
                 })}
 
                 {isCompleted && !streaming && (
-                  <div className="step-in flex items-center gap-3 px-3 py-2.5 border border-green-400/20 bg-green-400/5">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
+                  <div className="step-in flex items-center gap-3 px-3 py-3 border border-green-400/20 bg-green-400/5">
+                    <CheckCircle2 className="w-4 h-4 text-green-400 flex-shrink-0" />
                     <div>
-                      <p className="text-xs font-mono font-bold text-green-400">Kampanya Hazır</p>
-                      <p className="text-[11px] font-mono text-muted-foreground">
+                      <p className="text-sm font-mono font-bold text-green-400">Kampanya Hazır</p>
+                      <p className="text-xs font-mono text-muted-foreground">
                         {toolSteps.length} adım tamamlandı
                       </p>
                     </div>
@@ -363,9 +420,9 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
                 )}
 
                 {isFailed && (
-                  <div className="step-in border border-red-400/20 bg-red-400/5 p-3 flex items-start gap-2.5">
+                  <div className="step-in border border-red-400/20 bg-red-400/5 px-3 py-3 flex items-start gap-2.5">
                     <XCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-400" />
-                    <span className="text-xs font-mono text-red-400">
+                    <span className="text-[13px] font-mono text-red-400">
                       {currentJob.error_message || 'Bilinmeyen bir hata oluştu'}
                     </span>
                   </div>

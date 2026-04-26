@@ -2,7 +2,7 @@ import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { buildTask, runAgentSession } from '@/lib/anthropic'
 import { NextResponse } from 'next/server'
 
-export const maxDuration = 300
+export const maxDuration = 800
 
 const FAL_DOMAINS = ['fal.media', 'fal.run', 'cdn.fal.ai']
 
@@ -112,10 +112,19 @@ export async function POST(
       if (imageUrls.length > 0) result.images = imageUrls
       if (videoUrls.length > 0) result.videos = videoUrls
 
-      await service
+      const { error: dbErr } = await service
         .from('jobs')
         .update({ status: 'completed', session_id: sessionId, result })
         .eq('id', id)
+
+      if (dbErr) {
+        // raw_output çok büyük olabilir — kırp ve tekrar dene
+        const fallback = { ...result, raw_output: (result.raw_output as string ?? '').slice(0, 8000) }
+        await service
+          .from('jobs')
+          .update({ status: 'completed', session_id: sessionId, result: fallback })
+          .eq('id', id)
+      }
 
       await send({ type: 'status', status: 'completed', message: 'Tamamlandı!' })
       await send({ type: 'result', result })
