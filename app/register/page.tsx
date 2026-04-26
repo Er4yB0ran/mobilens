@@ -44,7 +44,7 @@ export default function RegisterPage() {
     <div className="min-h-screen bg-background flex flex-col">
       <nav className="h-14 flex items-center px-6 glass-nav">
         <Link href="/" className="font-black text-sm tracking-widest hover:opacity-70 transition-opacity">
-          FALAI
+          mobilens
         </Link>
       </nav>
 

@@ -44,7 +44,7 @@ export default function AppShell({ children, credits, isAdmin }: AppShellProps) 
           >
             <Menu className="w-5 h-5" />
           </button>
-          <span className="font-black text-sm tracking-widest">FALAI</span>
+          <span className="font-black text-sm tracking-widest">mobilens</span>
         </div>
 
         <main className="flex-1 overflow-y-auto">

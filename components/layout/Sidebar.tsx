@@ -38,7 +38,7 @@ export default function Sidebar({ credits, onClose, isAdmin }: SidebarProps) {
           className="font-black text-sm tracking-widest hover:opacity-70 transition-opacity"
           onClick={onClose}
         >
-          FALAI
+          mobilens
         </Link>
         {onClose && (
           <button

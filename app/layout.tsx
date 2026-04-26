@@ -18,7 +18,7 @@ const jetbrainsMono = JetBrains_Mono({
 })
 
 export const metadata: Metadata = {
-  title: 'FALAI — Reklam Otomasyonu',
+  title: 'mobilens — Reklam Otomasyonu',
   description: 'AI ile saniyeler içinde profesyonel reklam kampanyaları oluşturun.',
 }
 

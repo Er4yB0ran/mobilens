@@ -91,7 +91,7 @@ export default function LandingPage() {
       <nav className="h-16 flex items-center px-6 lg:px-12 justify-between sticky top-0 z-50 glass-nav">
         <div className="flex items-center gap-2">
           <Zap className="w-4 h-4 text-primary" strokeWidth={2.5} />
-          <span className="font-black text-sm tracking-widest">FALAI</span>
+          <span className="font-black text-sm tracking-widest">mobilens</span>
         </div>
         <div className="hidden md:flex items-center gap-8">
           <a href="#nasil-calisir" className="text-xs font-mono text-muted-foreground hover:text-foreground transition-colors uppercase tracking-widest">
@@ -376,7 +376,7 @@ export default function LandingPage() {
         />
 
         <p className="text-xs font-mono text-primary uppercase tracking-widest mb-6 relative">
-          05 — Neden FALAI
+          05 — Neden mobilens
         </p>
         <h2
           className="text-5xl md:text-6xl lg:text-7xl font-black tracking-tighter leading-none mb-6 relative max-w-4xl mx-auto"
@@ -511,7 +511,7 @@ export default function LandingPage() {
           <div>
             <div className="flex items-center gap-2 mb-3">
               <Zap className="w-4 h-4 text-primary" strokeWidth={2.5} />
-              <span className="font-black text-sm tracking-widest">FALAI</span>
+              <span className="font-black text-sm tracking-widest">mobilens</span>
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed max-w-xs font-light">
               Mobilya markalarına özel AI reklam otomasyonu. URL veya fotoğraftan
@@ -538,7 +538,7 @@ export default function LandingPage() {
           </div>
         </div>
         <div className="border-t border-border px-6 lg:px-12 py-5 flex items-center justify-between">
-          <span className="font-black text-xs tracking-widest text-muted-foreground/50">FALAI</span>
+          <span className="font-black text-xs tracking-widest text-muted-foreground/50">mobilens</span>
           <div className="flex items-center gap-4">
             <span
               className="flex items-center gap-1.5 text-xs font-mono"
@@ -550,7 +550,7 @@ export default function LandingPage() {
               />
               Sistemler çalışıyor
             </span>
-            <p className="text-muted-foreground/40 text-xs font-mono">© 2025 FALAI</p>
+            <p className="text-muted-foreground/40 text-xs font-mono">© 2025 mobilens</p>
           </div>
         </div>
       </footer>

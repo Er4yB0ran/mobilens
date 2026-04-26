@@ -14,7 +14,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
       <div className="border-b border-border/50 bg-card/50 backdrop-blur-sm sticky top-0 z-50">
         <div className="max-w-6xl mx-auto px-4 h-14 flex items-center gap-3">
           <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-          <span className="font-bold text-sm">FalAI Admin</span>
+          <span className="font-bold text-sm">mobilens Admin</span>
           <span className="text-xs text-muted-foreground px-2 py-0.5 rounded-full bg-primary/10 text-primary">
             {user.email}
           </span>
