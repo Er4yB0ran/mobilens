@@ -84,7 +84,7 @@ export async function runAgentSession(
         // session.idle = agent finished its turn. If we have output, done. Otherwise arm watchdog.
         if (type === 'session.idle') {
           if (hasOutput) { idleWithOutputResolve!(); break }
-          idleResolve?.()  // start 20s countdown
+          idleResolve!()  // start 20s countdown
         }
       }
     }
