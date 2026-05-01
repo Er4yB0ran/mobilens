@@ -66,7 +66,7 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
     if (
       currentJob.status !== 'completed' ||
       !result?.kling_request_id ||
-      result?.videos?.length > 0
+      (result?.videos?.length ?? 0) > 0
     ) return
 
     setKlingPolling(true)
