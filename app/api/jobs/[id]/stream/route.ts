@@ -36,8 +36,8 @@ function parseStructuredMedia(output: string): { images: string[]; videos: strin
   const images: string[] = []
   const videos: string[] = []
 
-  const imgBlock = output.match(/ÜRETİLEN_GÖRSELLER:\s*([\s\S]*?)(?=ÜRETİLEN_VİDEOLAR:|$)/i)
-  const vidBlock = output.match(/ÜRETİLEN_VİDEOLAR:\s*([\s\S]*?)$/i)
+  const imgBlock = output.match(/ÜRETİLEN_GÖRSELLER:\s*([\s\S]*?)(?=KLING_REQUEST_ID:|ÜRETİLEN_VİDEOLAR:|$)/i)
+  const vidBlock = output.match(/ÜRETİLEN_VİDEOLAR:\s*([\s\S]*?)(?=KLING_REQUEST_ID:|$)/i)
 
   // Trust the structured block — agent explicitly placed these URLs, no domain filter needed
   const extractUrls = (block: string) =>
@@ -47,6 +47,13 @@ function parseStructuredMedia(output: string): { images: string[]; videos: strin
   if (vidBlock?.[1]) videos.push(...extractUrls(vidBlock[1]))
 
   return { images, videos }
+}
+
+// Extract Kling request_id from agent output — agent writes KLING_REQUEST_ID: <id>
+function parseKlingRequestId(output: string): string {
+  const match = output.match(/KLING_REQUEST_ID:\s*([^\s\n]+)/i)
+  const id = (match?.[1] ?? '').trim()
+  return id === 'yok' || id === '' ? '' : id
 }
 
 export async function POST(
@@ -108,6 +115,9 @@ export async function POST(
       const input = job.type === 'url' ? job.input_url! : job.input_file_url!
       const task = buildTask(job.type, input)
 
+      // SESSION_TIMEOUT_MS (270s) fires before Vercel's 300s hard limit.
+      // On timeout with partial output, runAgentSession returns instead of throwing —
+      // so results (image URL, kling_request_id) are not lost.
       const { sessionId, output } = await runAgentSession(
         task,
         async (message) => { await send({ type: 'log', message }) }
@@ -123,9 +133,12 @@ export async function POST(
         ? structured.videos
         : extractMediaUrls([output], ['mp4', 'webm', 'mov'], false)
 
+      const klingRequestId = parseKlingRequestId(output)
+
       const result: Record<string, any> = { raw_output: output }
       if (imageUrls.length > 0) result.images = imageUrls
       if (videoUrls.length > 0) result.videos = videoUrls
+      if (klingRequestId) result.kling_request_id = klingRequestId
 
       const { error: dbErr } = await service
         .from('jobs')
@@ -144,7 +157,7 @@ export async function POST(
       await send({ type: 'status', status: 'completed', message: 'Tamamlandı!' })
       // Send lightweight result (without raw_output) so the SSE event stays small and parseable.
       // The full result (including raw_output) is in the DB and will be fetched via polling/realtime.
-      await send({ type: 'result', result: { images: imageUrls, videos: videoUrls } })
+      await send({ type: 'result', result: { images: imageUrls, videos: videoUrls, kling_request_id: klingRequestId || undefined } })
     } catch (err: any) {
       const msg = err?.message ?? 'Bilinmeyen hata'
       await service

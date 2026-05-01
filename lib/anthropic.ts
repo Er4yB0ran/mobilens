@@ -7,7 +7,7 @@ export const anthropic = new Anthropic({
 export const AGENT_ID = process.env.ANTHROPIC_AGENT_ID!
 const ENVIRONMENT_ID = process.env.ANTHROPIC_ENVIRONMENT_ID
 
-const SESSION_TIMEOUT_MS = 15 * 60 * 1000 // 15 minutes
+const SESSION_TIMEOUT_MS = 270_000 // 4.5 min — leaves 30s for DB cleanup before Vercel's 300s limit
 
 export async function runAgentSession(
   task: string,
@@ -51,13 +51,17 @@ export async function runAgentSession(
   )
 
   const streamPromise = (async () => {
+    let toolCallActive = false  // true after tool_use, false after next agent.message
+
     for await (const event of stream) {
       const type = event?.type as string | undefined
       if (!type) continue
 
       if (type === 'agent.tool_use' || type === 'agent.mcp_tool_use') {
+        toolCallActive = true
         // Tool calls intentionally not logged — only agent text is shown in the right panel
       } else if (type === 'agent.message') {
+        toolCallActive = false  // agent responded — tool cycle complete
         // Content may be Array<{type,text}> or plain string depending on SDK version
         const content = (event as any).content
         let text = ''
@@ -75,15 +79,18 @@ export async function runAgentSession(
         }
       } else if (type.startsWith('session.')) {
         if (type === 'session.error') {
-          throw new Error(`Session hatası: ${(event as any).message ?? type}`)
+          throw new Error(`Session hatası: ${(event as any).error?.message ?? (event as any).message ?? type}`)
         }
         // Terminal states — exit immediately
-        if (type === 'session.terminated' || type === 'session.deleted' || type === 'session.interrupted') {
+        if (type === 'session.status_terminated' || type === 'session.deleted') {
           break
         }
-        // session.idle = agent finished its turn. If we have output, done. Otherwise arm watchdog.
-        if (type === 'session.idle') {
-          if (hasOutput) { idleWithOutputResolve!(); break }
+        // session.status_idle = agent finished its turn.
+        // Only break if no tool call is in-flight — a bash error can trigger session.status_idle
+        // before the agent processes the tool result and sends its recovery message.
+        // If toolCallActive, arm the watchdog and keep listening for the agent's next message.
+        if (type === 'session.status_idle') {
+          if (hasOutput && !toolCallActive) { idleWithOutputResolve!(); break }
           idleResolve!()  // start 20s countdown
         }
       }
@@ -94,7 +101,12 @@ export async function runAgentSession(
   const raceResult = await Promise.race([streamPromise, timeoutPromise, idleWatchdog, idleWithOutputDone])
 
   if (raceResult === 'timeout') {
-    throw new Error('Agent zaman aşımına uğradı (15 dakika). Lütfen tekrar deneyin.')
+    // If the agent accumulated output before timing out (e.g. image URL + kling_request_id),
+    // treat it as a partial success so the results are not lost.
+    if (output.trim()) {
+      return { sessionId, output, collectedUrls: [] }
+    }
+    throw new Error('Agent zaman aşımına uğradı. Lütfen tekrar deneyin.')
   }
 
   if (!output.trim()) {
@@ -109,7 +121,9 @@ export async function runAgentSession(
 
 const AUTO_PROCEED = `\n\nÖNEMLİ: Bu istek otomatik SaaS sisteminden geliyor. Kullanıcıdan onay BEKLEME — ürünü bulduktan hemen sonra fotoğraf ve video üretimine geç.`
 
-const URL_LISTING = `\n\nSON ADIM — ZORUNLU: Tüm işlemler bitince yanıtının EN SONUNA şu formatı AYNEN ekle (başka URL ekleme, sadece fal.ai tarafından üretilenleri yaz):\n\nÜRETİLEN_GÖRSELLER:\n<her üretilen görsel URL'si ayrı satırda>\n\nÜRETİLEN_VİDEOLAR:\n<video URL'si>`
+// Agent must NOT wait for Kling video — it takes 5-15 min and would timeout the session.
+// Instead, capture the request_id so the server can poll Kling separately.
+const URL_LISTING = `\n\nSON ADIM — ZORUNLU: Tüm işlemler bitince yanıtının EN SONUNA şu formatı AYNEN ekle.\nÖNEMLİ: Kling video asenkron işleniyor — URL bekleme, sadece request_id'yi yaz:\n\nÜRETİLEN_GÖRSELLER:\n<her üretilen görsel URL'si ayrı satırda>\n\nKLING_REQUEST_ID:\n<video_uret() sonucundaki request_id değeri, video gönderilmediyse "yok">`
 
 export function buildTask(type: 'url' | 'upload', input: string): string {
   if (type === 'url') {

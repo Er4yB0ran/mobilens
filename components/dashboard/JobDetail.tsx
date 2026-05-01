@@ -49,6 +49,7 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
   const [currentJob, setCurrentJob] = useState<Job>(job)
   const [showRawOutput, setShowRawOutput] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [klingPolling, setKlingPolling] = useState(false)
   const logsEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -58,6 +59,38 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
     setStreaming(false)
     setShowRawOutput(job.status === 'completed' && !job.result?.images?.length && !job.result?.videos?.length)
   }, [job.id])
+
+  // Poll Kling video status when job is completed with a pending request_id but no video yet
+  useEffect(() => {
+    const result = currentJob.result
+    if (
+      currentJob.status !== 'completed' ||
+      !result?.kling_request_id ||
+      result?.videos?.length > 0
+    ) return
+
+    setKlingPolling(true)
+    const jobId = currentJob.id
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/jobs/${jobId}/check-video`)
+        if (!res.ok) return
+        const data = await res.json()
+        if (data.status === 'completed' && data.video_url) {
+          clearInterval(timer)
+          setKlingPolling(false)
+          setCurrentJob(prev => ({
+            ...prev,
+            result: { ...prev.result, videos: [data.video_url] },
+          }))
+        } else if (data.status === 'failed' || data.status === 'no_request_id') {
+          clearInterval(timer)
+          setKlingPolling(false)
+        }
+      } catch {}
+    }, 30_000)  // Kling genellikle 5-15 dk, 30s'de bir kontrol yeterli
+    return () => { clearInterval(timer); setKlingPolling(false) }
+  }, [currentJob.id, currentJob.status, currentJob.result?.kling_request_id, currentJob.result?.videos?.length])
 
   async function refreshJobState() {
     setRefreshing(true)
@@ -127,15 +160,28 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
     return () => clearInterval(timer)
   }, [currentJob.status, currentJob.id, streaming])
 
-  // Stream koparsa ya da önceki oturumdan 'running' geldiyse: 5s'de bir DB'yi sorgula
-  // Kling video üretimi 5-15 dk sürebildiğinden MAX = 300 (25 dakika)
+  // Stream koparsa ya da önceki oturumdan 'running' geldiyse: 5s'de bir DB'yi sorgula.
+  // Server-side safety deadline 260s'de tetiklenir; biz 300s (60 deneme × 5s) sonra vazgeçeriz.
+  // Ayrıca job yaşı 6 dakikayı geçtiyse ve DB hâlâ 'running' diyorsa stuck sayılır.
   useEffect(() => {
     if (currentJob.status !== 'running' || streaming) return
     const jobId = currentJob.id
+    const createdAt = new Date((currentJob as any).created_at).getTime()
     let attempts = 0
-    const MAX = 300
+    const MAX = 60  // 60 × 5s = 5 dakika polling (server 260s'de zaten fail etmeli)
+    const STUCK_MS = 8 * 60 * 1000  // 8 dakika: 4.5dk session + 30s DB + buffer
     const timer = setInterval(async () => {
       attempts++
+      // Job 6 dakikadan eskiyse ve DB hâlâ running'se server kesinlikle timeout'a uğramış
+      if (Date.now() - createdAt > STUCK_MS) {
+        clearInterval(timer)
+        setCurrentJob(prev => ({
+          ...prev,
+          status: 'failed',
+          error_message: 'İşlem zaman aşımına uğradı. Lütfen tekrar deneyin.',
+        }))
+        return
+      }
       try {
         const res = await fetch(`/api/jobs/${jobId}`)
         if (!res.ok) return
@@ -378,6 +424,21 @@ export default function JobDetail({ job, onJobUpdated }: JobDetailProps) {
                       <video controls className="w-full max-h-64 object-contain" src={url} />
                     </div>
                   ))}
+                </div>
+              </section>
+            )}
+
+            {/* Kling video still processing — show status while polling */}
+            {displayVideos.length === 0 && result?.kling_request_id && (
+              <section className="border border-primary/20 bg-primary/5 px-3 py-3 flex items-center gap-3">
+                <Loader2 className="w-4 h-4 text-primary animate-spin flex-shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-[13px] font-mono text-foreground">
+                    {klingPolling ? 'Video işleniyor — Kling genellikle 5-15 dk sürer' : 'Video sıraya alındı'}
+                  </p>
+                  <p className="text-[11px] font-mono text-muted-foreground truncate">
+                    ID: {result.kling_request_id}
+                  </p>
                 </div>
               </section>
             )}
