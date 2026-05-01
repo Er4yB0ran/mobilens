@@ -23,6 +23,7 @@ export interface JobResult {
   videos?: string[]
   report?: string
   raw_output?: string
+  kling_request_id?: string
 }
 
 export interface Credits {
